@@ -64,7 +64,7 @@
   <header>
     <div>
       <h1>arm <span>servo</span></h1>
-      <div class="sub">A 3-axis robot arm: each joint's angle is read by an <b style="color:var(--amber)">encoder</b>, run through a servo <b style="color:var(--cyan)">ISR</b> (PID), and pushed back out as motor torque. Change the interrupt period and watch why <b style="color:var(--cyan)">1&nbsp;µs</b> tracks smoothly while <b style="color:var(--red)">20&nbsp;µs</b> rings the arm into instability.</div>
+      <div class="sub">A 3-axis robot arm: each joint's angle is read by an <b style="color:var(--amber)">encoder</b>, run through a servo <b style="color:var(--cyan)">ISR</b> (PID), and pushed back out as motor torque. Change the interrupt period and watch why <b style="color:var(--cyan)">1&nbsp;µs</b> tracks smoothly while <b style="color:var(--red)">20&nbsp;µs</b> rings the arm into instability. Switch to <b style="color:var(--cyan)">Cascade</b> for the nested position + current loops that make real drives work.</div>
     </div>
   </header>
 
@@ -73,6 +73,13 @@
 
     <div class="controls">
       <div class="ctl">
+        <label for="view">View</label>
+        <div class="seg" id="view" role="group" aria-label="View mode">
+          <button data-view="arm"     aria-pressed="true">Arm · 3-axis</button>
+          <button data-view="cascade" aria-pressed="false">Cascade · 1-axis</button>
+        </div>
+      </div>
+      <div class="ctl armc">
         <label for="isr">Interrupt period&nbsp;·&nbsp;T<sub>isr</sub></label>
         <div class="seg" id="isr" role="group" aria-label="ISR period">
           <button data-isr="20" aria-pressed="false">20µs</button>
@@ -82,7 +89,7 @@
           <button data-isr="1"  aria-pressed="false">1µs</button>
         </div>
       </div>
-      <div class="ctl">
+      <div class="ctl armc">
         <label for="bits">Encoder</label>
         <div class="seg amber" id="bits" role="group" aria-label="Encoder resolution">
           <button data-bits="12" aria-pressed="false">12-bit</button>
@@ -90,7 +97,7 @@
           <button data-bits="20" aria-pressed="false">20-bit</button>
         </div>
       </div>
-      <div class="ctl">
+      <div class="ctl armc">
         <label for="mech">Joint τ<sub>mech</sub></label>
         <div class="seg amber" id="mech" role="group" aria-label="Mechanical time constant">
           <button data-m="1"   aria-pressed="true">11µs</button>
@@ -100,14 +107,14 @@
         </div>
       </div>
 
-      <div class="ctl">
+      <div class="ctl armc">
         <label for="overrun">ISR overrun</label>
         <div class="seg" id="overrun" role="group" aria-label="ISR deadline overrun">
           <button data-ovr="off" aria-pressed="true">Off</button>
           <button data-ovr="on"  aria-pressed="false">On</button>
         </div>
       </div>
-      <div class="ctl">
+      <div class="ctl armc">
         <label for="speed">Slow-mo</label>
         <div class="seg" id="speed" role="group" aria-label="Simulation speed">
           <button data-speed="35"  aria-pressed="false">0.5×</button>
@@ -115,6 +122,34 @@
           <button data-speed="140" aria-pressed="false">2×</button>
         </div>
       </div>
+
+      <div class="ctl cascc" style="display:none">
+        <label for="tpos">Position loop</label>
+        <div class="seg" id="tpos" role="group" aria-label="Position loop rate">
+          <button data-tp="100"  aria-pressed="false">100µs</button>
+          <button data-tp="200"  aria-pressed="true">200µs</button>
+          <button data-tp="500"  aria-pressed="false">500µs</button>
+          <button data-tp="1000" aria-pressed="false">1ms</button>
+        </div>
+      </div>
+      <div class="ctl cascc" style="display:none">
+        <label for="tcur">Current loop</label>
+        <div class="seg amber" id="tcur" role="group" aria-label="Current loop rate">
+          <button data-tc="1"  aria-pressed="false">1µs</button>
+          <button data-tc="5"  aria-pressed="true">5µs</button>
+          <button data-tc="10" aria-pressed="false">10µs</button>
+          <button data-tc="20" aria-pressed="false">20µs</button>
+        </div>
+      </div>
+      <div class="ctl cascc" style="display:none">
+        <label for="cspeed">Slow-mo</label>
+        <div class="seg" id="cspeed" role="group" aria-label="Cascade speed">
+          <button data-cs="200" aria-pressed="false">0.5×</button>
+          <button data-cs="400" aria-pressed="true">1×</button>
+          <button data-cs="800" aria-pressed="false">2×</button>
+        </div>
+      </div>
+
       <div class="spacer"></div>
       <button class="btn kick" id="kick">⚡ Collision</button>
       <button class="btn" id="play">⏸ Pause</button>
@@ -174,7 +209,15 @@ const cfg = {
   // ISR execution-time model (overrun mode) — 3 axes per tick = tight budget
   isrBaseUs: 0.2, isrAxisCostUs: 0.2, isrJitterUs: 0.3, isrCollideCostUs: 1.8,
   // motor thermal (teaching values): heat ∝ Σ torque²
-  rTh: 42, ambient: 25, motorTau: 4
+  rTh: 42, ambient: 25, motorTau: 4,
+  // cascaded single-axis model (CASCADE mode): outer position loop + inner current loop
+  casc: {
+    L:4, R:1, Kt:4e-6, Ke:10, J:1, b:0, Vbus:5, imax:4,   // electrical + mechanical plant
+    Kpi:0.4, Kii:0.1,        // current loop PI (fast)
+    Kpp:1.0, Kdp:700,        // position loop PD (slow)
+    A:0.8, Tsig:12000,       // commanded angle (slow sine, µs)
+    winPos:16000, winCur:240 // two scope timebases: position (ms) vs current (µs)
+  }
 };
 
 const state = {
@@ -185,7 +228,14 @@ const state = {
   missTicks: new Set(),
   motorTempC: cfg.ambient,
   collideT: -1e9, collideAmp: 0, collideJoint: 0,
-  mScale: 1                  // mechanical-time-constant multiplier (1 = stiff toy joint)
+  mScale: 1,                 // mechanical-time-constant multiplier (1 = stiff toy joint)
+  // ---- cascade mode ----
+  mode: 'arm',               // 'arm' (3-axis single-loop) | 'cascade' (1-axis nested loops)
+  Tpos: 200, Tcur: 5,        // outer position-loop / inner current-loop periods (µs)
+  cspeed: 400,               // cascade playback speed (µs virtual per real second)
+  casc: { th:0, w:0, i:0, Vapp:0, Vpend:0, icmdApp:0, icmdPend:0, integ:0,
+          nextP:0, nextC:0, posHist:[], curHist:[], lastPosT:-1e9,
+          loadT:-1e9, loadAmp:0 }
 };
 
 // ---- model ----
@@ -523,8 +573,155 @@ function drawMeta(){
     +'   ·   ≈ '+factor.toLocaleString()+'× slow-mo', W-22, by+16);
 }
 
+// ===== CASCADE MODE: outer position loop + inner current loop, single axis =====
+const CPOS={x:64, y:184, w:952, h:132};
+const CCUR={x:64, y:362, w:952, h:132};
+function cascCmd(t){ return cfg.casc.A*Math.sin(2*Math.PI*t/cfg.casc.Tsig); }
+function cascMotorTargetC(){ return cfg.ambient + state.casc.i*state.casc.i*0.067*cfg.rTh; }
+function advanceCascade(dtv){
+  const c=cfg.casc, S=state.casc, sub=0.5; let rem=dtv;
+  const posGap=c.winPos/600;
+  while(rem>1e-6){
+    const step=Math.min(sub,rem), t1=state.vtime+step;
+    while(S.nextP < t1){ const tk=S.nextP;            // outer position loop (PD)
+      let ic=c.Kpp*(cascCmd(tk)-S.th) - c.Kdp*S.w;
+      if(ic>c.imax)ic=c.imax; else if(ic<-c.imax)ic=-c.imax;
+      S.icmdApp=S.icmdPend; S.icmdPend=ic; S.nextP+=state.Tpos; }
+    while(S.nextC < t1){ const tk=S.nextC;            // inner current loop (PI)
+      const e=S.icmdApp - S.i; S.integ+=e*state.Tcur;
+      let V=c.Kpi*e + c.Kii*S.integ;
+      if(V>c.Vbus){V=c.Vbus; S.integ-=e*state.Tcur;} else if(V<-c.Vbus){V=-c.Vbus; S.integ-=e*state.Tcur;}
+      S.Vapp=S.Vpend; S.Vpend=V; S.nextC+=state.Tcur; }
+    let load=0; if(S.loadAmp && state.vtime>=S.loadT) load=S.loadAmp*Math.exp(-(state.vtime-S.loadT)/2500);
+    S.i += (S.Vapp - c.R*S.i - c.Ke*S.w)/c.L*step;    // electrical (fast)
+    S.w += (c.Kt*S.i - c.b*S.w - load)/c.J*step;      // mechanical (slow)
+    S.th += S.w*step;
+    if(S.th>2.6){S.th=2.6; S.w=0;} else if(S.th<-2.6){S.th=-2.6; S.w=0;}   // joint hard-stops
+    S.curHist.push({t:t1, ic:S.icmdApp, i:S.i});
+    if(state.vtime - S.lastPosT >= posGap){ S.posHist.push({t:t1, th:S.th}); S.lastPosT=state.vtime; }
+    state.vtime=t1; rem-=step;
+  }
+  while(S.curHist.length && S.curHist[0].t < state.vtime-c.winCur-5) S.curHist.shift();
+  while(S.posHist.length && S.posHist[0].t < state.vtime-c.winPos-100) S.posHist.shift();
+}
+function seedCascade(){
+  const S=state.casc;
+  S.th=0; S.w=0; S.i=0; S.Vapp=0; S.Vpend=0; S.icmdApp=0; S.icmdPend=0; S.integ=0;
+  S.posHist=[]; S.curHist=[]; S.lastPosT=-1e9;
+  S.nextP=Math.ceil(state.vtime/state.Tpos)*state.Tpos;
+  S.nextC=Math.ceil(state.vtime/state.Tcur)*state.Tcur;
+  for(let i=0;i<800;i++) advanceCascade(cfg.casc.winPos/800);
+}
+function cascPosErr(){ const S=state.casc; if(S.posHist.length<4)return 0; let a=0,n=0;
+  for(const h of S.posHist){ const e=cascCmd(h.t)-h.th; a+=e*e; n++; } return Math.sqrt(a/n); }
+function cascCurErr(){ const S=state.casc; if(S.curHist.length<4)return 0; let a=0,n=0;
+  for(const h of S.curHist){ const e=h.ic-h.i; a+=e*e; n++; } return Math.sqrt(a/n); }
+function cascPosV(){ const r=cascPosErr(); return r<0.3?{t:'SMOOTH',c:COL.green}:r<1.0?{t:'LAGGY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
+function cascCurV(){ const r=cascCurErr(); return r<0.3?{t:'TIGHT',c:COL.green}:r<1.0?{t:'RIPPLY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
+
+function drawCascGlyph(g,cx,cy){
+  X.save(); X.translate(cx,cy);
+  if(g==='sine'){ X.strokeStyle=COL.cyan; X.lineWidth=2; X.beginPath();
+    for(let k=-26;k<=26;k++){ const y=-Math.sin(k/26*Math.PI*2)*10; k===-26?X.moveTo(k,y):X.lineTo(k,y);} X.stroke(); }
+  else if(g==='pos'){ X.strokeStyle=COL.cyan; X.lineWidth=2; X.beginPath(); X.arc(0,0,12,Math.PI*0.7,Math.PI*2.3); X.stroke();
+    X.save(); X.rotate(-state.casc.th); X.beginPath(); X.moveTo(0,0); X.lineTo(11,0); X.strokeStyle=COL.cyan; X.stroke(); X.restore(); }
+  else if(g==='cur'){ X.strokeStyle=COL.amber; X.lineWidth=2; X.beginPath(); let x=-26;
+    for(let c2=0;c2<4;c2++){ X.moveTo(x,6); X.lineTo(x,-8); X.lineTo(x+6,-8); X.lineTo(x+6,6); X.lineTo(x+13,6); x+=13; } X.stroke(); }
+  else if(g==='mot'){ const bc=motorDT()<5?COL.green:motorDT()<20?COL.amber:COL.red;
+    X.strokeStyle=bc; X.lineWidth=2; X.beginPath(); X.arc(0,-2,12,0,7); X.stroke();
+    X.save(); X.rotate(state.vtime*0.02); X.beginPath(); X.moveTo(-8,0); X.lineTo(8,0); X.moveTo(0,-8); X.lineTo(0,8); X.strokeStyle=bc; X.stroke(); X.restore();
+    X.fillStyle=bc; X.font='700 9px '+FONT; X.textAlign='center'; X.fillText(Math.round(state.motorTempC)+'°C',0,22); }
+  else if(g==='joint'){ const c2=cascPosV().c; X.strokeStyle=c2; X.lineWidth=3; X.lineCap='round';
+    X.save(); X.rotate(-state.casc.th); X.beginPath(); X.moveTo(0,0); X.lineTo(18,0); X.stroke(); X.restore();
+    X.lineCap='butt'; X.fillStyle=COL.dim; X.beginPath(); X.arc(0,0,3,0,7); X.fill(); }
+  X.restore();
+}
+function drawCascPipeline(){
+  const items=[
+    {t:'SETPOINT',s:'θ target',g:'sine'},
+    {t:'POSITION',s:'PD @ '+state.Tpos+'µs',g:'pos'},
+    {t:'CURRENT',s:'PI @ '+state.Tcur+'µs',g:'cur'},
+    {t:'MOTOR',s:'L · R · J',g:'mot'},
+    {t:'JOINT',s:'θ out',g:'joint'}
+  ];
+  const n=items.length, gap=18, bw=(W-24-gap*(n-1))/n, x0=12;
+  for(let i=0;i<n;i++){ const x=x0+i*(bw+gap), acc=items[i].g==='cur'?COL.amber:COL.cyan;
+    panelBox(x,PIPE.y,bw,PIPE.h,null,acc);
+    X.textAlign='center'; X.fillStyle=acc; X.font='700 14px '+FONT; X.fillText(items[i].t,x+bw/2,PIPE.y+26);
+    X.fillStyle=COL.dim; X.font='10px '+FONT; X.fillText(items[i].s,x+bw/2,PIPE.y+42);
+    drawCascGlyph(items[i].g, x+bw/2, PIPE.y+80);
+  }
+  X.strokeStyle=COL.line; X.lineWidth=2;
+  for(let i=0;i<n-1;i++){ const xa=x0+i*(bw+gap)+bw, xb=x0+(i+1)*(bw+gap), y=PIPE.y+PIPE.h/2;
+    X.beginPath(); X.moveTo(xa,y); X.lineTo(xb,y); X.stroke();
+    X.fillStyle=COL.line; X.beginPath(); X.moveTo(xb,y); X.lineTo(xb-7,y-4); X.lineTo(xb-7,y+4); X.fill(); }
+  // encoder feedback return path (JOINT -> POSITION)
+  const xJ=x0+4*(bw+gap)+bw/2, xP=x0+1*(bw+gap)+bw/2, yb=PIPE.y+PIPE.h+12;
+  X.strokeStyle='rgba(53,208,255,0.3)'; X.setLineDash([4,3]); X.lineWidth=1.4;
+  X.beginPath(); X.moveTo(xJ,PIPE.y+PIPE.h); X.lineTo(xJ,yb); X.lineTo(xP,yb); X.lineTo(xP,PIPE.y+PIPE.h); X.stroke();
+  X.setLineDash([]); X.fillStyle='rgba(53,208,255,0.45)'; X.font='8px '+FONT; X.textAlign='center';
+  X.fillText('encoder feedback', (xJ+xP)/2, yb-3);
+}
+function drawCascScope(R,label,yspan,hist,getCmd,getAct,win,verd,unit){
+  panelBox(R.x-12,R.y-20,R.w+24,R.h+30,label,verd.c);
+  gridRect(R);
+  const t0=state.vtime-win, tx=t=>R.x+(t-t0)/win*R.w, yY=v=>R.y+R.h-(v+yspan)/(2*yspan)*R.h;
+  X.save(); X.beginPath(); X.rect(R.x,R.y,R.w,R.h); X.clip();
+  X.strokeStyle='rgba(255,255,255,0.08)'; X.setLineDash([4,4]); X.lineWidth=1;
+  X.beginPath(); X.moveTo(R.x,yY(0)); X.lineTo(R.x+R.w,yY(0)); X.stroke(); X.setLineDash([]);
+  // command (cyan)
+  X.strokeStyle=COL.cyan; X.lineWidth=1.8; X.beginPath(); let st=false;
+  for(const h of hist){ const x=tx(h.t), y=yY(getCmd(h)); if(x<R.x-2) continue; st?X.lineTo(x,y):(X.moveTo(x,y),st=true); }
+  X.stroke();
+  // actual (colored by error)
+  let prev=null;
+  for(const h of hist){ const x=tx(h.t), y=yY(getAct(h));
+    if(x<R.x-2){ prev={x,y,h}; continue; }
+    if(prev){ const e=Math.abs(getCmd(h)-getAct(h))/yspan;
+      X.strokeStyle=e<0.12?COL.green:e<0.4?COL.amber:COL.red; X.lineWidth=2;
+      X.beginPath(); X.moveTo(prev.x,prev.y); X.lineTo(x,y); X.stroke(); }
+    prev={x,y,h};
+  }
+  X.restore();
+  X.strokeStyle='rgba(255,255,255,0.25)'; X.lineWidth=1;
+  X.beginPath(); X.moveTo(R.x+R.w,R.y); X.lineTo(R.x+R.w,R.y+R.h); X.stroke();
+  X.textAlign='right'; X.font='700 10px '+FONT; X.fillStyle=verd.c; X.fillText(verd.t, R.x+R.w-4, R.y+12);
+}
+function drawCascMeta(){
+  const pv=cascPosV(), cv=cascCurV();
+  const chips=[
+    ['POS RATE', (1000/state.Tpos).toFixed(0)+' kHz', COL.cyan],
+    ['CUR RATE', (1000/state.Tcur).toFixed(0)+' kHz', COL.cyan],
+    ['POS ERR', (cascPosErr()*180/Math.PI).toFixed(1)+'°', pv.c],
+    ['CUR RIPPLE', cascCurErr().toFixed(2)+' A', cv.c],
+    ['MOTOR TEMP', Math.round(state.motorTempC)+'°C', motorDT()<5?COL.green:motorDT()<20?COL.amber:COL.red]
+  ];
+  const n=chips.length, gap=12, cw=(W-24-gap*(n-1))/n, x0=12;
+  for(let i=0;i<n;i++){ const x=x0+i*(cw+gap);
+    panelBox(x,META.y,cw,META.h-34,null,chips[i][2]); X.textAlign='center';
+    X.fillStyle=COL.dim; X.font='9px '+FONT; X.fillText(chips[i][0],x+cw/2,META.y+18);
+    X.fillStyle=chips[i][2]; X.font='700 17px '+FONT; X.fillText(chips[i][1],x+cw/2,META.y+42); }
+  const by=META.y+META.h-26;
+  const overall=(pv.t==='UNSTABLE'||cv.t==='UNSTABLE')?{t:'UNSTABLE',c:COL.red}
+    :(pv.t!=='SMOOTH'||cv.t!=='TIGHT')?{t:'MARGINAL',c:COL.amber}:{t:'SMOOTH',c:COL.green};
+  panelBox(12,by,W-24,24,null,overall.c);
+  X.textAlign='left'; X.fillStyle=overall.c; X.font='700 13px '+FONT; X.fillText('▸ '+overall.t,22,by+16);
+  X.fillStyle=COL.dim; X.font='11px '+FONT;
+  X.fillText('outer position loop: '+pv.t+'     ·     inner current loop: '+cv.t, 132, by+16);
+  X.textAlign='right'; X.fillStyle=COL.dim; X.font='10px '+FONT; X.fillText('cascaded servo', W-22, by+16);
+}
+function drawCascade(){
+  drawCascPipeline();
+  drawCascScope(CPOS, 'POSITION LOOP · θ   (window '+(cfg.casc.winPos/1000).toFixed(0)+' ms — mechanical world)',
+    1.15, state.casc.posHist, h=>cascCmd(h.t), h=>h.th, cfg.casc.winPos, cascPosV(), 'rad');
+  drawCascScope(CCUR, "CURRENT LOOP · i   (window "+cfg.casc.winCur+" µs — the inner loop's fast world)",
+    cfg.casc.imax*1.2, state.casc.curHist, h=>h.ic, h=>h.i, cfg.casc.winCur, cascCurV(), 'A');
+  drawCascMeta();
+}
+
 function frame(){
   clear();
+  if(state.mode==='cascade'){ drawCascade(); return; }
   drawPipeline();
   drawArm();
   for(let j=0;j<3;j++) drawJointScope(SC[j], j);
@@ -536,14 +733,19 @@ let last=performance.now();
 function tick(now){
   const dtMs=Math.min(60, now-last); last=now;
   if(state.playing){
-    advance(state.speed * state.mScale * dtMs/1000);   // play at a consistent wall-clock rate
     const dtsec=dtMs/1000;
-    state.motorTempC += (motorTargetC()-state.motorTempC)*(1-Math.exp(-dtsec/cfg.motorTau));
+    if(state.mode==='cascade'){
+      advanceCascade(state.cspeed * dtsec);
+      state.motorTempC += (cascMotorTargetC()-state.motorTempC)*(1-Math.exp(-dtsec/cfg.motorTau));
+    } else {
+      advance(state.speed * state.mScale * dtsec);     // play at a consistent wall-clock rate
+      state.motorTempC += (motorTargetC()-state.motorTempC)*(1-Math.exp(-dtsec/cfg.motorTau));
+    }
   }
   frame();
   requestAnimationFrame(tick);
 }
-(function seed(){ for(let i=0;i<600;i++) advance(winUs()/600); })();
+(function seed(){ if(state.mode==='cascade'){ seedCascade(); } else { for(let i=0;i<600;i++) advance(winUs()/600); } })();
 requestAnimationFrame(tick);
 
 // ---- controls ----
@@ -559,8 +761,29 @@ seg('speed','speed',Number,v=>{ state.speed=v; });
 seg('overrun','ovr',v=>v==='on',v=>{ state.overrun=v; if(!v) state.missTicks.clear(); });
 seg('mech','m',Number,v=>{ state.mScale=v; state.missTicks.clear();
   for(const J of state.joints) J.lastSampT=-1e9; });
+seg('tpos','tp',Number,v=>{ state.Tpos=v; state.casc.nextP=Math.ceil(state.vtime/v)*v; });
+seg('tcur','tc',Number,v=>{ state.Tcur=v; state.casc.nextC=Math.ceil(state.vtime/v)*v; });
+seg('cspeed','cs',Number,v=>{ state.cspeed=v; });
+seg('view','view',String,v=>setMode(v));
+function setMode(m){
+  state.mode=m;
+  document.querySelectorAll('.armc').forEach(e=>e.style.display = m==='arm'?'':'none');
+  document.querySelectorAll('.cascc').forEach(e=>e.style.display = m==='cascade'?'':'none');
+  document.getElementById('kick').textContent = m==='cascade' ? '⚡ Load disturbance' : '⚡ Collision';
+  if(m==='cascade'){ seedCascade(); }
+  else { state.nextTick=Math.ceil(state.vtime/state.isrUs)*state.isrUs; state.missTicks.clear(); }
+  // keep the VIEW buttons in sync (e.g. on programmatic init)
+  document.querySelectorAll('#view button').forEach(b=>b.setAttribute('aria-pressed', b.dataset.view===m?'true':'false'));
+  last=performance.now();
+}
+setMode(state.mode);   // initialize control visibility to the starting mode
 
 document.getElementById('kick').addEventListener('click',()=>{
+  if(state.mode==='cascade'){
+    state.casc.loadT=state.vtime; state.casc.loadAmp=(Math.random()>0.5?1:-1)*1.2e-6;
+    setStatus('Load disturbance applied — the inner+outer loops fight it off. Try slow vs fast loops.');
+    return;
+  }
   state.collideJoint=Math.floor(Math.random()*3);
   state.collideT=state.vtime; state.collideAmp=(Math.random()>0.5?1:-1)*(0.5+Math.random()*0.3);
   setStatus('Collision on '+cfg.joints[state.collideJoint].name+' — watch it recover (or not). Try 1µs vs 20µs.');

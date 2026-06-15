@@ -34,14 +34,34 @@ They do — because **it's the ratio that matters, not the absolute 20 µs.** Re
 - **3 joint scopes** — per axis: commanded angle (cyan), encoder sample-and-hold (amber), and the actual angle colored by following error (green→amber→red). Independent profiles per joint.
 - **Metrics + verdict** — loop rate, worst following error, `T_isr/τ_mech`, encoder LSB, motor temperature, motor aging, and a SMOOTH / MARGINAL / UNSTABLE verdict.
 
+## Cascade mode (the capstone)
+
+Switch **View → Cascade** for the single-axis **nested-loop** model that's how real drives actually work: a slow outer **position** loop wrapped around a fast inner **current** loop, with two independent plants.
+
+```
+θcmd ─►[POSITION PD @ T_pos]─► i_cmd ─►[CURRENT PI @ T_cur]─► V ─► motor
+         (outer, ~kHz, ms plant)         (inner, ~10–100 kHz, µs plant)   │
+            ▲ θ  (mechanical: J·θ̈ = Kt·i − b·θ̇)                            │
+            └──────────────── i  (electrical: L·di/dt = V − R·i − Ke·ω) ◄──┘
+```
+
+Two scopes at two timebases — **position (ms window)** and **current (µs window)** — and a dual verdict (outer / inner). The lesson you can drive with the two rate knobs:
+
+- **Both fast** (e.g. T_pos 200 µs, T_cur 5 µs) → position SMOOTH, current TIGHT.
+- **Slow inner loop** (T_cur 20 µs) → the current loop oscillates (big ripple) and starves the position loop of usable torque — *everything* breaks, even though the position loop rate is fine. (This is the GaN/power-rail lesson living inside the motor.)
+- **Slow outer loop** (T_pos 1 ms) → the position loop rings into instability **even with a perfectly tight current loop**.
+
+The takeaway: **each loop must be fast enough for its own plant.** A fast current loop can't rescue a too-slow position loop, and a fast position loop is useless on top of a broken current loop. That's why drives are cascaded — and why "1 µs class" rates belong to the *current* layer, not position.
+
 ## Controls
 
 - **Interrupt period `T_isr`** — 20 / 10 / 5 / 2 / 1 µs.
 - **Encoder** — 12 / 16 / 20-bit (resolution → `ENCODER LSB`, in ° / arcsec).
 - **Joint τ_mech** — 11 µs / 45 µs / 0.1 ms / 1 ms. Scales the joint's mechanical time constant (the plant slows, gains rescale to keep the loop well-tuned). Proves stability is set by **T_isr / τ_mech**: a slow, realistic joint is rock-solid at 20 µs. The `STABLE ≤` chip shows the max loop period that stays controllable.
 - **ISR overrun** — Off / On. The ISR now runs **3 axes per tick**, so the compute budget is tight: a 1 µs loop occasionally blows its deadline even idle, and a collision blows a burst. Blown deadlines = the update is dropped (motor holds), drawn hatched magenta.
+- **View** — **Arm · 3-axis** (single-loop joints) ↔ **Cascade · 1-axis** (nested position + current loops). Cascade mode swaps in **Position loop** / **Current loop** rate selectors.
 - **Slow-mo** — 0.5× / 1× / 2×.
-- **⚡ Collision** — knock a random joint with an impulse torque. At 1 µs it recovers; at 20 µs it can kick the loop into divergence.
+- **⚡ Collision / Load disturbance** — in Arm mode, knock a random joint with an impulse torque (recovers at 1 µs, can diverge at 20 µs). In Cascade mode, apply a load-torque disturbance the loops must reject.
 - **Pause**, **● Record 3s GIF** (downloads `arm-servo-<period>us.gif`).
 
 ## Motor heating

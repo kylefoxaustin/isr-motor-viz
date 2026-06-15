@@ -65,6 +65,26 @@ slams its stops); 1 µs → SMOOTH.
 Same as the GaN tool: `gif.js` vendored, worker base64-inlined as `GIF_WORKER_B64`
 (copied verbatim from the sibling). Record = 15 fps × 3 s → `arm-servo-<period>us.gif`.
 
+## Cascade mode (`state.mode==='cascade'`)
+
+Single-axis nested-loop model, toggled by the **View** control (`setMode`). Outer
+position loop (PD @ `state.Tpos`) outputs a current command; inner current loop (PI
+@ `state.Tcur`) drives voltage into a 2-state plant: electrical `L·di/dt = V−R·i−Ke·ω`
+(fast) + mechanical `J·θ̈ = Kt·i − b·θ̇` (slow). All constants in `cfg.casc` (tuned in
+node so each loop has its own stability transition relative to its own plant). Two
+scopes at two timebases: `CPOS` (winPos 16 ms) and `CCUR` (winCur 240 µs). Dual
+verdict: `cascPosV()` (outer) + `cascCurV()` (inner) → combined banner.
+
+- Slow **inner** (T_cur≥20 µs): current loop oscillates/saturates → starves torque →
+  whole thing breaks even with a fine position rate.
+- Slow **outer** (T_pos≥500 µs–1 ms): position rings/diverges even with a tight current loop.
+- `seedCascade()` resets + prefills both windows; called on switch-to-cascade and from
+  the initial `seed()` if mode starts cascade. `setMode()` toggles `.armc`/`.cascc`
+  control groups, realigns `nextTick` when returning to arm (else it'd fire a huge tick
+  backlog across the vtime gap), and re-seeds cascade.
+- The arm and cascade sims share `state.vtime` and the thermal `motorTempC`; only one
+  runs per frame (dispatched in `tick()` / `frame()`).
+
 ## Gotchas
 
 - **Headless rendering can't show the motor heating** — `--virtual-time-budget`
