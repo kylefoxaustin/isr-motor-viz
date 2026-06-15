@@ -144,9 +144,9 @@
       <div class="ctl cascc" style="display:none">
         <label for="cspeed">Slow-mo</label>
         <div class="seg" id="cspeed" role="group" aria-label="Cascade speed">
-          <button data-cs="200" aria-pressed="false">0.5×</button>
-          <button data-cs="400" aria-pressed="true">1×</button>
-          <button data-cs="800" aria-pressed="false">2×</button>
+          <button data-cs="400"  aria-pressed="false">0.5×</button>
+          <button data-cs="800"  aria-pressed="true">1×</button>
+          <button data-cs="1600" aria-pressed="false">2×</button>
         </div>
       </div>
 
@@ -232,7 +232,7 @@ const state = {
   // ---- cascade mode ----
   mode: 'arm',               // 'arm' (3-axis single-loop) | 'cascade' (1-axis nested loops)
   Tpos: 200, Tcur: 5,        // outer position-loop / inner current-loop periods (µs)
-  cspeed: 400,               // cascade playback speed (µs virtual per real second)
+  cspeed: 800,               // cascade playback speed (µs virtual per real second)
   casc: { th:0, w:0, i:0, Vapp:0, Vpend:0, icmdApp:0, icmdPend:0, integ:0,
           nextP:0, nextC:0, posHist:[], curHist:[], lastPosT:-1e9,
           loadT:-1e9, loadAmp:0 }
@@ -610,14 +610,20 @@ function seedCascade(){
   S.posHist=[]; S.curHist=[]; S.lastPosT=-1e9;
   S.nextP=Math.ceil(state.vtime/state.Tpos)*state.Tpos;
   S.nextC=Math.ceil(state.vtime/state.Tcur)*state.Tcur;
-  for(let i=0;i<800;i++) advanceCascade(cfg.casc.winPos/800);
+  for(let i=0;i<400;i++) advanceCascade(cfg.casc.winPos/400);   // settle (let the transient die)
+  S.posHist=[]; S.curHist=[]; S.lastPosT=-1e9;                  // discard the transient
+  for(let i=0;i<400;i++) advanceCascade(cfg.casc.winPos/400);   // fill the window with settled data
 }
-function cascPosErr(){ const S=state.casc; if(S.posHist.length<4)return 0; let a=0,n=0;
-  for(const h of S.posHist){ const e=cascCmd(h.t)-h.th; a+=e*e; n++; } return Math.sqrt(a/n); }
+// judge over a RECENT window (½ command period), not the whole 16 ms display window,
+// so the verdict reflects current behavior instead of dragging an old transient for ~40 s.
+function cascPosErr(){ const S=state.casc; if(S.posHist.length<4)return 0; const cut=state.vtime-6000;
+  let a=0,n=0; for(const h of S.posHist){ if(h.t<cut)continue; const e=cascCmd(h.t)-h.th; a+=e*e; n++; } return n?Math.sqrt(a/n):0; }
 function cascCurErr(){ const S=state.casc; if(S.curHist.length<4)return 0; let a=0,n=0;
   for(const h of S.curHist){ const e=h.ic-h.i; a+=e*e; n++; } return Math.sqrt(a/n); }
-function cascPosV(){ const r=cascPosErr(); return r<0.3?{t:'SMOOTH',c:COL.green}:r<1.0?{t:'LAGGY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
-function cascCurV(){ const r=cascCurErr(); return r<0.3?{t:'TIGHT',c:COL.green}:r<1.0?{t:'RIPPLY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
+// thresholds: a stable loop still has inherent sinusoidal tracking lag (~0.2 rad) — that's
+// SMOOTH, not marginal. UNSTABLE = ringing into the joint stops (~2 rad) / current blow-up.
+function cascPosV(){ const r=cascPosErr(); return r<0.45?{t:'SMOOTH',c:COL.green}:r<1.5?{t:'LAGGY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
+function cascCurV(){ const r=cascCurErr(); return r<0.5?{t:'TIGHT',c:COL.green}:r<2.5?{t:'RIPPLY',c:COL.amber}:{t:'UNSTABLE',c:COL.red}; }
 
 function drawCascGlyph(g,cx,cy){
   X.save(); X.translate(cx,cy);
