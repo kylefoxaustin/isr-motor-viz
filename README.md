@@ -23,6 +23,10 @@ The model is a sampled **PD controller** on a 2nd-order joint (`J·θ̈ + b·θ�
 | 5 µs  | 0.45× | visible ringing | **MARGINAL** |
 | 10–20 µs | ≥0.9× | rings → slams the stops | **UNSTABLE** |
 
+### "But real MCUs run motors at 20 µs just fine!"
+
+They do — because **it's the ratio that matters, not the absolute 20 µs.** Real motor/joint mechanics have time constants of ~ms, so a 20 µs loop is *hundreds* of times faster than the plant — deep in the SMOOTH regime. Our toy joint defaults to an artificially stiff **τ_mech ≈ 11 µs** to put the instability on a 1–20 µs axis. Slide the **Joint τ_mech** control up (11 µs → 0.1 ms → 1 ms) and watch the `STABLE ≤` readout climb (≤9 µs → ≤90 µs → ≤0.9 ms) and the 20 µs verdict flip **UNSTABLE → SMOOTH**. (Real designs also help themselves with cascaded current/velocity/position loops at different rates, FOC, PWM-synced sampling, and observer-based velocity instead of a raw sampled derivative.)
+
 ## What it shows
 
 - **Pipeline** — encoder → servo ISR (3 axes) → driver → motor (heats up) → arm.
@@ -34,6 +38,7 @@ The model is a sampled **PD controller** on a 2nd-order joint (`J·θ̈ + b·θ�
 
 - **Interrupt period `T_isr`** — 20 / 10 / 5 / 2 / 1 µs.
 - **Encoder** — 12 / 16 / 20-bit (resolution → `ENCODER LSB`, in ° / arcsec).
+- **Joint τ_mech** — 11 µs / 45 µs / 0.1 ms / 1 ms. Scales the joint's mechanical time constant (the plant slows, gains rescale to keep the loop well-tuned). Proves stability is set by **T_isr / τ_mech**: a slow, realistic joint is rock-solid at 20 µs. The `STABLE ≤` chip shows the max loop period that stays controllable.
 - **ISR overrun** — Off / On. The ISR now runs **3 axes per tick**, so the compute budget is tight: a 1 µs loop occasionally blows its deadline even idle, and a collision blows a burst. Blown deadlines = the update is dropped (motor holds), drawn hatched magenta.
 - **Slow-mo** — 0.5× / 1× / 2×.
 - **⚡ Collision** — knock a random joint with an impulse torque. At 1 µs it recovers; at 20 µs it can kick the loop into divergence.

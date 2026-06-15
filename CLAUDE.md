@@ -47,6 +47,14 @@ slams its stops); 1 µs → SMOOTH.
   (three joints per tick → tight budget), jitter, and a collision surcharge. Blown
   deadline → the update is dropped (motor holds), drawn hatched magenta.
 - **Collision** (= the GaN "disturbance kick"): impulse torque on a random joint.
+- **Joint τ_mech** (`state.mScale`, `winUs`/`tauMechEff`/`maxStableUs`): scales the joint's
+  mechanical time constant. The plant slows (`J·m²`, `b·m`, `Kd·m` → bandwidth ∝ 1/m,
+  damping ratio unchanged), and the command period + display window + advance speed scale
+  with `m` so the picture stays consistent — only `T_isr/τ_mech` (and thus stability)
+  changes. Proves "it's the ratio": at m=10 (τ≈0.1 ms) a 20 µs loop is SMOOTH. The
+  `STABLE ≤` chip = `0.8·τ_mech_eff`. sampHist is downsampled (`lastSampT`/`sampGap`) so
+  tick count stays bounded as the window grows. This is the answer to "how do real MCUs
+  run motors at 20 µs?" — real joints are ms-slow, so 20 µs is deep in the stable region.
 - **Motor thermal** (`motorLoss`/`motorTargetC`/`motorTempC`): heat ∝ Σ torque²,
   integrated with thermal mass (`cfg.motorTau` real seconds) in `tick()`; drives the
   MOTOR glyph color + MOTOR TEMP / MOTOR AGING chips. Unstable loop saturates torque
